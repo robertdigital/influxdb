@@ -26,7 +26,7 @@ type SeriesRow struct {
 	SeriesTags models.Tags // unmodified series tags
 	Tags       models.Tags
 	Field      string
-	Query      cursors.CursorIterators
+	Query      cursors.CursorIterator
 	ValueCond  influxql.Expr
 }
 
