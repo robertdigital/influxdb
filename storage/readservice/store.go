@@ -35,14 +35,14 @@ func (s *store) ReadFilter(ctx context.Context, req *datatypes.ReadFilterRequest
 		return nil, tracing.LogError(span, err)
 	}
 
-	var cur reads.SeriesCursor
-	if cur, err = reads.NewIndexSeriesCursor(ctx, source.GetOrgID(), source.GetBucketID(), req.Predicate, s.viewer); err != nil {
+	var seriesCursor reads.SeriesCursor
+	if seriesCursor, err = reads.NewIndexSeriesCursor(ctx, source.GetOrgID(), source.GetBucketID(), req.Predicate, s.viewer); err != nil {
 		return nil, tracing.LogError(span, err)
-	} else if cur == nil {
+	} else if seriesCursor == nil {
 		return nil, nil
 	}
 
-	return reads.NewFilteredResultSet(ctx, req, cur), nil
+	return reads.NewFilteredResultSet(ctx, req, seriesCursor), nil
 }
 
 func (s *store) ReadGroup(ctx context.Context, req *datatypes.ReadGroupRequest) (reads.GroupResultSet, error) {
