@@ -63,7 +63,7 @@ func NewIndexSeriesCursor(ctx context.Context, orgID, bucketID influxdb.ID, pred
 		Ascending:  true,
 		Ordered:    true,
 	}
-	p := &indexSeriesCursor{row: SeriesRow{Query: cursors.CursorIterators{cursorIterator}}}
+	p := &indexSeriesCursor{row: SeriesRow{Query: cursorIterator}}
 
 	if root := predicate.GetRoot(); root != nil {
 		if p.cond, err = NodeToExpr(root, nil); err != nil {

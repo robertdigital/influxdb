@@ -30,13 +30,13 @@ func (s *store) ReadFilter(ctx context.Context, req *datatypes.ReadFilterRequest
 		return nil, tracing.LogError(span, errors.New("missing read source"))
 	}
 
-	source, err := getReadSource(*req.ReadSource)
+	readSource, err := getReadSource(*req.ReadSource)
 	if err != nil {
 		return nil, tracing.LogError(span, err)
 	}
 
 	var seriesCursor reads.SeriesCursor
-	if seriesCursor, err = reads.NewIndexSeriesCursor(ctx, source.GetOrgID(), source.GetBucketID(), req.Predicate, s.viewer); err != nil {
+	if seriesCursor, err = reads.NewIndexSeriesCursor(ctx, readSource.GetOrgID(), readSource.GetBucketID(), req.Predicate, s.viewer); err != nil {
 		return nil, tracing.LogError(span, err)
 	} else if seriesCursor == nil {
 		return nil, nil
@@ -53,13 +53,13 @@ func (s *store) ReadGroup(ctx context.Context, req *datatypes.ReadGroupRequest) 
 		return nil, tracing.LogError(span, errors.New("missing read source"))
 	}
 
-	source, err := getReadSource(*req.ReadSource)
+	readSource, err := getReadSource(*req.ReadSource)
 	if err != nil {
 		return nil, tracing.LogError(span, err)
 	}
 
 	newCursor := func() (reads.SeriesCursor, error) {
-		return reads.NewIndexSeriesCursor(ctx, source.GetOrgID(), source.GetBucketID(), req.Predicate, s.viewer)
+		return reads.NewIndexSeriesCursor(ctx, readSource.GetOrgID(), readSource.GetBucketID(), req.Predicate, s.viewer)
 	}
 
 	return reads.NewGroupResultSet(ctx, req, newCursor), nil
