@@ -59,7 +59,6 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 		Content: "I am a free document",
 	}
 	if err := ds.CreateDocument(ctx, doc,
-		authorizer.CreateDocumentAuthorizerOption(ctx, org.ID, ""),
 		influxdb.WithLabel(l1.ID),
 		influxdb.WithLabel(l3.ID)); err != nil {
 		panic(err)
@@ -68,14 +67,13 @@ func setup(t *testing.T) (func(auth influxdb.Authorizer) *httptest.Server, func(
 		Content: "I am another document",
 	}
 	if err := ds.CreateDocument(ctx, adoc,
-		authorizer.CreateDocumentAuthorizerOption(ctx, org.ID, ""),
 		influxdb.WithLabel(l1.ID),
 		influxdb.WithLabel(l2.ID)); err != nil {
 		panic(err)
 	}
 	backend := NewMockDocumentBackend(t)
 	backend.HTTPErrorHandler = http.ErrorHandler(0)
-	backend.DocumentService = svc
+	backend.DocumentService = authorizer.NewDocumentService(svc)
 	backend.LabelService = authorizer.NewLabelService(svc)
 	serverFn := func(auth influxdb.Authorizer) *httptest.Server {
 		switch a := auth.(type) {
@@ -383,7 +381,7 @@ func GetDocument(t *testing.T) {
 		defer server.Close()
 		client := clientFn(server.URL)
 		if _, err := client.GetDocument(context.Background(), namespace, fx.Document.ID); err != nil {
-			if !strings.Contains(err.Error(), "unauthorized") {
+			if !strings.Contains(err.Error(), "document not found") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		} else {

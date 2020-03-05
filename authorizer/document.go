@@ -2,12 +2,10 @@ package authorizer
 
 import (
 	"context"
-	"fmt"
-
 	"github.com/influxdata/influxdb"
-	icontext "github.com/influxdata/influxdb/context"
 )
 
+/*
 // authorizedWithOrgID adds the provided org as an owner of the document if
 // the authorizer is allowed to access the org in being added.
 func CreateDocumentAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgName string) influxdb.DocumentOptions {
@@ -34,14 +32,6 @@ func UpdateDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) infl
 
 func DeleteDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) influxdb.DocumentFindOptions {
 	return authorizedWrite(ctx, docID)
-}
-
-func newDocumentPermission(a influxdb.Action, orgID, id influxdb.ID) (*influxdb.Permission, error) {
-	return influxdb.NewPermissionAtID(id, a, influxdb.DocumentsResourceType, orgID)
-}
-
-func newDocumentOrgPermission(a influxdb.Action, orgID influxdb.ID) (*influxdb.Permission, error) {
-	return influxdb.NewPermission(a, influxdb.DocumentsResourceType, orgID)
 }
 
 func authorizedMatchPermission(ctx context.Context, p influxdb.Permission) influxdb.DocumentFindOptions {
@@ -179,4 +169,119 @@ func toDocumentOptions(findOpt influxdb.DocumentFindOptions) influxdb.DocumentOp
 		_, err := findOpt(index, nil)
 		return err
 	}
+}
+ */
+
+var _ influxdb.DocumentService = (*DocumentService)(nil)
+var _ influxdb.DocumentStore = (*documentStore)(nil)
+
+type DocumentService struct {
+	s influxdb.DocumentService
+}
+
+// NewDocumentService constructs an instance of an authorizing document service.
+func NewDocumentService(s influxdb.DocumentService) influxdb.DocumentService {
+	return &DocumentService{
+		s: s,
+	}
+}
+
+func (s *DocumentService) CreateDocumentStore(ctx context.Context, name string) (influxdb.DocumentStore, error) {
+	ds, err := s.s.FindDocumentStore(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return &documentStore{s: ds}, nil
+}
+
+func (s *DocumentService) FindDocumentStore(ctx context.Context, name string) (influxdb.DocumentStore, error) {
+	ds, err := s.s.CreateDocumentStore(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return &documentStore{s: ds}, nil
+}
+
+type documentStore struct {
+	s influxdb.DocumentStore
+}
+
+func newDocumentPermission(a influxdb.Action, id influxdb.ID) (*influxdb.Permission, error) {
+	return influxdb.NewPermissionAtResourceID(id, a, influxdb.DocumentsResourceType)
+}
+
+func newDocumentOrgPermission(a influxdb.Action, orgID influxdb.ID) (*influxdb.Permission, error) {
+	return influxdb.NewPermission(a, influxdb.DocumentsResourceType, orgID)
+}
+
+func (s *documentStore) CreateDocument(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+	p, err := newDocumentOrgPermission(influxdb.WriteAction, d.OrgID)
+	if err != nil {
+		return err
+	}
+	if err := IsAllowed(ctx, *p); err != nil {
+		return err
+	}
+	return s.s.CreateDocument(ctx, d, opts...)
+}
+
+func (s *documentStore) UpdateDocument(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+	p, err := newDocumentPermission(influxdb.WriteAction, d.ID)
+	if err != nil {
+		return err
+	}
+	if err := IsAllowed(ctx, *p); err != nil {
+		return err
+	}
+	return s.s.UpdateDocument(ctx, d, opts...)
+}
+
+func (s *documentStore) findDocs(ctx context.Context, action influxdb.Action, opts ...influxdb.DocumentFindOptions) ([]*influxdb.Document, error) {
+	// TODO: we'll likely want to push this operation into the database eventually since fetching the whole list of data
+	//  will likely be expensive.
+	opts = append(opts, influxdb.IncludeOwner)
+	ds, err := s.s.FindDocuments(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	// This filters without allocating
+	// https://github.com/golang/go/wiki/SliceTricks#filtering-without-allocating
+	fds := ds[:0]
+	for _, d := range ds {
+		dp, err := newDocumentPermission(action, d.ID)
+		if err != nil {
+			return nil, err
+		}
+		ps := []influxdb.Permission{*dp}
+		op, err := newDocumentOrgPermission(action, d.OrgID)
+		if err == nil {
+			ps = append(ps, *op)
+		}
+		if err := IsAllowedAll(ctx, ps); err != nil {
+			continue
+		}
+		fds = append(fds, d)
+	}
+	return fds, nil
+}
+
+func (s *documentStore) FindDocuments(ctx context.Context, opts ...influxdb.DocumentFindOptions) ([]*influxdb.Document, error) {
+	return s.findDocs(ctx, influxdb.ReadAction, opts...)
+}
+
+func (s *documentStore) DeleteDocuments(ctx context.Context, opts ...influxdb.DocumentFindOptions) error {
+	ds, err := s.findDocs(ctx, influxdb.WriteAction, opts...)
+	if err != nil {
+		return err
+	}
+	ids := make([]influxdb.ID, len(ds))
+	for i, d := range ds {
+		ids[i] = d.ID
+	}
+	return s.s.DeleteDocuments(ctx,
+		func(_ influxdb.DocumentIndex, _ influxdb.DocumentDecorator) (ids []influxdb.ID, e error) {
+			return ids, nil
+		},
+	)
 }

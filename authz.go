@@ -323,6 +323,19 @@ func NewPermissionAtID(id ID, a Action, rt ResourceType, orgID ID) (*Permission,
 	return p, p.Valid()
 }
 
+// NewPermissionAtResourceID creates a permission with the provided arguments.
+func NewPermissionAtResourceID(rid ID, a Action, rt ResourceType) (*Permission, error) {
+	p := &Permission{
+		Action: a,
+		Resource: Resource{
+			Type: rt,
+			ID:   &rid,
+		},
+	}
+
+	return p, p.Valid()
+}
+
 // OperPermissions are the default permissions for those who setup the application.
 func OperPermissions() []Permission {
 	ps := []Permission{}

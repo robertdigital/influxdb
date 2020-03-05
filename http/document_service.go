@@ -9,7 +9,6 @@ import (
 
 	"github.com/influxdata/httprouter"
 	"github.com/influxdata/influxdb"
-	"github.com/influxdata/influxdb/authorizer"
 	"github.com/influxdata/influxdb/kit/tracing"
 	"github.com/influxdata/influxdb/pkg/httpc"
 	"go.uber.org/zap"
@@ -36,17 +35,19 @@ type DocumentBackend struct {
 	log *zap.Logger
 	influxdb.HTTPErrorHandler
 
-	DocumentService influxdb.DocumentService
-	LabelService    influxdb.LabelService
+	DocumentService     influxdb.DocumentService
+	LabelService        influxdb.LabelService
+	OrganizationService influxdb.OrganizationService
 }
 
 // NewDocumentBackend returns a new instance of DocumentBackend.
 func NewDocumentBackend(log *zap.Logger, b *APIBackend) *DocumentBackend {
 	return &DocumentBackend{
-		HTTPErrorHandler: b.HTTPErrorHandler,
-		log:              log,
-		DocumentService:  b.DocumentService,
-		LabelService:     b.LabelService,
+		HTTPErrorHandler:    b.HTTPErrorHandler,
+		log:                 log,
+		DocumentService:     b.DocumentService,
+		LabelService:        b.LabelService,
+		OrganizationService: b.OrganizationService,
 	}
 }
 
@@ -57,8 +58,9 @@ type DocumentHandler struct {
 	log *zap.Logger
 	influxdb.HTTPErrorHandler
 
-	DocumentService influxdb.DocumentService
-	LabelService    influxdb.LabelService
+	DocumentService     influxdb.DocumentService
+	LabelService        influxdb.LabelService
+	OrganizationService influxdb.OrganizationService
 }
 
 const (
@@ -76,8 +78,9 @@ func NewDocumentHandler(b *DocumentBackend) *DocumentHandler {
 		HTTPErrorHandler: b.HTTPErrorHandler,
 		log:              b.log,
 
-		DocumentService: b.DocumentService,
-		LabelService:    b.LabelService,
+		DocumentService:     b.DocumentService,
+		LabelService:        b.LabelService,
+		OrganizationService: b.OrganizationService,
 	}
 
 	h.HandlerFunc("POST", documentsPath, h.handlePostDocument)
@@ -163,7 +166,9 @@ func (h *DocumentHandler) handlePostDocument(w http.ResponseWriter, r *http.Requ
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
-	opts = append(opts, authorizer.CreateDocumentAuthorizerOption(ctx, req.OrgID, req.Org))
+	// TODO
+	req.Document.OrgID = req.OrgID
+	//opts = append(opts, authorizer.CreateDocumentAuthorizerOption(ctx, req.OrgID, req.Org))
 	for _, label := range req.Labels {
 		// TODO(desa): make these AuthorizedWithLabel eventually
 		opts = append(opts, influxdb.WithLabel(label))
@@ -234,13 +239,13 @@ func (h *DocumentHandler) handleGetDocuments(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	opts := []influxdb.DocumentFindOptions{influxdb.IncludeLabels}
 	if err := validateOrgParams(req.Org, req.OrgID); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
-	opts = append(opts, authorizer.GetDocumentsAuthorizerOption(ctx, req.OrgID, req.Org))
-
+	// TODO
+	opts := []influxdb.DocumentFindOptions{influxdb.IncludeLabels, influxdb.WhereOrgID(req.OrgID)}
+	//opts = append(opts, authorizer.GetDocumentsAuthorizerOption(ctx, req.OrgID, req.Org))
 	ds, err := s.FindDocuments(ctx, opts...)
 	if err != nil {
 		h.HandleHTTPError(ctx, err, w)
@@ -392,15 +397,20 @@ func (h *DocumentHandler) getDocument(w http.ResponseWriter, r *http.Request) (*
 	}
 	ds, err := s.FindDocuments(
 		ctx,
-		authorizer.GetDocumentAuthorizerOption(ctx, req.ID),
+		influxdb.WhereID(req.ID),
 		influxdb.IncludeContent,
 		influxdb.IncludeLabels,
 	)
 	if err != nil {
 		return nil, "", err
 	}
-
-	if len(ds) != 1 {
+	if len(ds) == 0 {
+		return nil, "", &influxdb.Error{
+			Code: influxdb.ENotFound,
+			Msg:  influxdb.ErrDocumentNotFound,
+		}
+	}
+	if len(ds) > 1 {
 		return nil, "", &influxdb.Error{
 			Code: influxdb.EInternal,
 			Msg:  fmt.Sprintf("found more than one document with id %s; please report this error", req.ID),
@@ -478,7 +488,7 @@ func (h *DocumentHandler) handleDeleteDocument(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err := s.DeleteDocuments(ctx, authorizer.DeleteDocumentAuthorizerOption(ctx, req.ID)); err != nil {
+	if err := s.DeleteDocuments(ctx, influxdb.WhereID(req.ID)); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
@@ -540,7 +550,7 @@ func (h *DocumentHandler) handlePutDocument(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := s.UpdateDocument(ctx, req.Document, authorizer.UpdateDocumentAuthorizerOption(ctx, req.ID)); err != nil {
+	if err := s.UpdateDocument(ctx, req.Document); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}

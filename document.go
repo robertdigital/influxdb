@@ -19,6 +19,12 @@ type Document struct {
 	Meta    DocumentMeta `json:"meta"`
 	Content interface{}  `json:"content,omitempty"` // TODO(desa): maybe this needs to be json.Marshaller & json.Unmarshaler
 	Labels  []*Label     `json:"labels,omitempty"`  // read only
+
+	// This is needed for authorization.
+	// Don't want to change the schema of Document and start a migration.
+	// The service that passes documents around will take care of filling it
+	// via request parameters or others.
+	OrgID ID `json:"-"`
 }
 
 // DocumentMeta is information that is universal across documents. Ideally
@@ -75,7 +81,7 @@ type DocumentIndex interface {
 type DocumentDecorator interface {
 	IncludeContent() error
 	IncludeLabels() error
-	// TODO(desa): add support for including owners.
+	IncludeOwnerOrg() error
 }
 
 // IncludeContent signals to the DocumentStore that the content of the document
@@ -88,6 +94,12 @@ func IncludeContent(_ DocumentIndex, dd DocumentDecorator) ([]ID, error) {
 // should be included.
 func IncludeLabels(_ DocumentIndex, dd DocumentDecorator) ([]ID, error) {
 	return nil, dd.IncludeLabels()
+}
+
+// IncludeOwner signals to the DocumentStore that the owner
+// should be included.
+func IncludeOwner(_ DocumentIndex, dd DocumentDecorator) ([]ID, error) {
+	return nil, dd.IncludeOwnerOrg()
 }
 
 // DocumentOptions are specified during create/update. They can be used to add labels/owners

@@ -113,6 +113,14 @@ func (s *DocumentStore) CreateDocument(ctx context.Context, d *influxdb.Document
 			}
 		}
 
+		if err := s.service.addDocumentOwner(ctx, tx, d.ID); err != nil {
+			return err
+		}
+
+		if err := s.service.createUserResourceMappingForOrg(ctx, tx, d.OrgID, d.ID, influxdb.DocumentsResourceType); err != nil {
+			return err
+		}
+
 		if err = s.decorateDocumentWithLabels(ctx, tx, d); err != nil {
 			return err
 		}
@@ -350,10 +358,7 @@ func (s *Service) createDocument(ctx context.Context, tx Tx, ns string, d *influ
 	d.ID = s.IDGenerator.ID()
 	d.Meta.CreatedAt = s.Now()
 	d.Meta.UpdatedAt = s.Now()
-	if err := s.putDocument(ctx, tx, ns, d); err != nil {
-		return err
-	}
-	return s.addDocumentOwner(ctx, tx, d.ID)
+	return s.putDocument(ctx, tx, ns, d)
 }
 
 func (s *Service) addDocumentOwner(ctx context.Context, tx Tx, did influxdb.ID) error {
@@ -491,6 +496,7 @@ func (s *Service) findDocumentContentByID(ctx context.Context, tx Tx, ns string,
 type DocumentDecorator struct {
 	data   bool
 	labels bool
+	owner  bool
 
 	writable bool
 }
@@ -520,6 +526,19 @@ func (d *DocumentDecorator) IncludeLabels() error {
 
 	d.labels = true
 
+	return nil
+}
+
+// IncludeOwner signals that the document should include its owner.
+func (d *DocumentDecorator) IncludeOwnerOrg() error {
+	if d.writable {
+		return &influxdb.Error{
+			Code: influxdb.EInternal,
+			Msg:  "cannot include labels in document",
+		}
+	}
+
+	d.owner = true
 	return nil
 }
 
@@ -572,6 +591,14 @@ func (s *DocumentStore) FindDocuments(ctx context.Context, opts ...influxdb.Docu
 		if dd.labels {
 			for _, doc := range docs {
 				if err := s.decorateDocumentWithLabels(ctx, tx, doc); err != nil {
+					return err
+				}
+			}
+		}
+
+		if dd.owner {
+			for _, doc := range docs {
+				if err := s.decorateDocumentWithOwnerOrg(ctx, tx, doc); err != nil {
 					return err
 				}
 			}
@@ -769,5 +796,29 @@ func (s *DocumentStore) decorateDocumentWithLabels(ctx context.Context, tx Tx, d
 	}
 
 	d.Labels = append(d.Labels, ls...)
+	return nil
+}
+
+func (s *DocumentStore) decorateDocumentWithOwnerOrg(ctx context.Context, tx Tx, d *influxdb.Document) error {
+	// If the OrgID is already there, then this is a nop.
+	if d.OrgID.Valid() {
+		return nil
+	}
+	f := influxdb.UserResourceMappingFilter{
+		ResourceID:   d.ID,
+		UserType:     influxdb.Owner,
+		ResourceType: influxdb.DocumentsResourceType,
+	}
+	ms, err := s.service.findUserResourceMappings(ctx, tx, f)
+	if err != nil {
+		return err
+	}
+
+	for _, m := range ms {
+		if m.MappingType == influxdb.OrgMappingType {
+			d.OrgID = m.UserID
+			return nil
+		}
+	}
 	return nil
 }
