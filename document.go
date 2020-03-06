@@ -41,20 +41,18 @@ type DocumentMeta struct {
 // DocumentStore is used to perform CRUD operations on documents. It follows an options
 // pattern that allows users to perform actions related to documents in a transactional way.
 type DocumentStore interface {
-	CreateDocument(ctx context.Context, d *Document, opts ...DocumentOptions) error
-	UpdateDocument(ctx context.Context, d *Document, opts ...DocumentOptions) error
+	CreateDocument(ctx context.Context, d *Document) error
+	FindDocument(ctx context.Context, id ID) (*Document, error)
+	UpdateDocument(ctx context.Context, d *Document) error
+	DeleteDocument(ctx context.Context, id ID) error
 
 	FindDocuments(ctx context.Context, opts ...DocumentFindOptions) ([]*Document, error)
 	DeleteDocuments(ctx context.Context, opts ...DocumentFindOptions) error
 }
 
-// DocumentIndex is a structure that is used in DocumentOptions to perform operations
-// related to labels and ownership.
+// DocumentIndex is a structure that is used in DocumentFindOptions to filter out
+// documents based on some criteria.
 type DocumentIndex interface {
-	// TODO(desa): support users as document owners eventually
-	AddDocumentOwner(docID ID, ownerType string, ownerID ID) error
-	RemoveDocumentOwner(docID ID, ownerType string, ownerID ID) error
-
 	GetAccessorsDocuments(ownerType string, ownerID ID) ([]ID, error)
 	GetDocumentsAccessors(docID ID) ([]ID, error)
 
@@ -66,24 +64,24 @@ type DocumentIndex interface {
 	// member.
 	IsOrgAccessor(userID, orgID ID) error
 
+	// TODO(desa): support finding document by label
 	FindOrganizationByName(n string) (ID, error)
 	FindOrganizationByID(id ID) error
 	FindLabelByID(id ID) error
-
-	AddDocumentLabel(docID, labelID ID) error
-	RemoveDocumentLabel(docID, labelID ID) error
-
-	// TODO(desa): support finding document by label
 }
 
 // DocumentDecorator passes information to the DocumentStore about the presentation
-// of the data being retrieved. It can be used to include the content or the labels
-// associated with a document.
+// of the data being retrieved.
 type DocumentDecorator interface {
 	IncludeContent() error
 	IncludeLabels() error
 	IncludeOrganizations() error
 }
+
+// DocumentFindOptions are used to lookup documents.
+// TODO(desa): consider changing this to have a single struct that has both
+//  the decorator and the index on it.
+type DocumentFindOptions func(DocumentIndex, DocumentDecorator) ([]ID, error)
 
 // IncludeContent signals to the DocumentStore that the content of the document
 // should be included.
@@ -103,57 +101,6 @@ func IncludeOrganizations(_ DocumentIndex, dd DocumentDecorator) ([]ID, error) {
 	return nil, dd.IncludeOrganizations()
 }
 
-// DocumentOptions are specified during create/update. They can be used to add labels/owners
-// to documents. During Create, options are executed after the creation of the document has
-// taken place. During Update, they happen before.
-type DocumentOptions func(ID, DocumentIndex) error
-
-// DocumentFindOptions are speficied during find/delete. They are used to lookup
-// documents using labels/owners.
-// TODO(desa): consider changing this to have a single struct that has both
-// the decorator and the index on it.
-type DocumentFindOptions func(DocumentIndex, DocumentDecorator) ([]ID, error)
-
-// WithOrg adds the provided org as an owner of the document.
-func WithOrg(org string) func(ID, DocumentIndex) error {
-	return func(id ID, idx DocumentIndex) error {
-		oid, err := idx.FindOrganizationByName(org)
-		if err != nil {
-			return err
-		}
-
-		return idx.AddDocumentOwner(id, "org", oid)
-	}
-}
-
-// WithLabel adds a label to the documents where it is applied.
-func WithLabel(lid ID) func(ID, DocumentIndex) error {
-	return func(id ID, idx DocumentIndex) error {
-		// TODO(desa): turns out that labels are application global, at somepoint we'll
-		// want to scope these by org. We should add auth at that point.
-		err := idx.FindLabelByID(lid)
-		if err != nil {
-			return err
-		}
-
-		return idx.AddDocumentLabel(id, lid)
-	}
-}
-
-// WithoutLabel removes a label to the documents where it is applied.
-func WithoutLabel(lid ID) func(ID, DocumentIndex) error {
-	return func(id ID, idx DocumentIndex) error {
-		// TODO(desa): turns out that labels are application global, at somepoint we'll
-		// want to scope these by org. We should add auth at that point.
-		err := idx.FindLabelByID(lid)
-		if err != nil {
-			return err
-		}
-
-		return idx.RemoveDocumentLabel(id, lid)
-	}
-}
-
 // WhereOrg retrieves a list of the ids of the documents that belong to the provided org.
 func WhereOrg(org string) func(DocumentIndex, DocumentDecorator) ([]ID, error) {
 	return func(idx DocumentIndex, dec DocumentDecorator) ([]ID, error) {
@@ -169,12 +116,5 @@ func WhereOrg(org string) func(DocumentIndex, DocumentDecorator) ([]ID, error) {
 func WhereOrgID(orgID ID) func(DocumentIndex, DocumentDecorator) ([]ID, error) {
 	return func(idx DocumentIndex, _ DocumentDecorator) ([]ID, error) {
 		return idx.GetAccessorsDocuments("org", orgID)
-	}
-}
-
-// WhereID passes through the id provided.
-func WhereID(docID ID) func(DocumentIndex, DocumentDecorator) ([]ID, error) {
-	return func(idx DocumentIndex, _ DocumentDecorator) ([]ID, error) {
-		return []ID{docID}, nil
 	}
 }

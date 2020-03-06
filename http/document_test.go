@@ -264,7 +264,7 @@ func TestService_handleDeleteDocumentLabel(t *testing.T) {
 							FindDocumentsFn: func(ctx context.Context, opts ...influxdb.DocumentFindOptions) ([]*influxdb.Document, error) {
 								return []*influxdb.Document{&doc3}, nil
 							},
-							UpdateDocumentFn: func(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+							UpdateDocumentFn: func(ctx context.Context, d *influxdb.Document) error {
 								return nil
 							},
 						}, nil
@@ -405,7 +405,7 @@ func TestService_handlePostDocumentLabel(t *testing.T) {
 							FindDocumentsFn: func(ctx context.Context, opts ...influxdb.DocumentFindOptions) ([]*influxdb.Document, error) {
 								return []*influxdb.Document{&doc3}, nil
 							},
-							UpdateDocumentFn: func(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+							UpdateDocumentFn: func(ctx context.Context, d *influxdb.Document) error {
 								return nil
 							},
 						}, nil
@@ -441,7 +441,7 @@ func TestService_handlePostDocumentLabel(t *testing.T) {
 							FindDocumentsFn: func(ctx context.Context, opts ...influxdb.DocumentFindOptions) ([]*influxdb.Document, error) {
 								return []*influxdb.Document{&doc4}, nil
 							},
-							UpdateDocumentFn: func(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+							UpdateDocumentFn: func(ctx context.Context, d *influxdb.Document) error {
 								return nil
 							},
 						}, nil
@@ -816,7 +816,7 @@ func TestService_handlePostDocuments(t *testing.T) {
 					FindDocumentStoreFn: func(context.Context, string) (influxdb.DocumentStore, error) {
 						return &mock.DocumentStore{
 							TimeGenerator: mockGen,
-							CreateDocumentFn: func(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+							CreateDocumentFn: func(ctx context.Context, d *influxdb.Document) error {
 								d.Meta.CreatedAt = mockGen.Now()
 								return nil
 							},
@@ -862,7 +862,7 @@ func TestService_handlePostDocuments(t *testing.T) {
 					FindDocumentStoreFn: func(context.Context, string) (influxdb.DocumentStore, error) {
 						return &mock.DocumentStore{
 							TimeGenerator: mockGen,
-							CreateDocumentFn: func(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+							CreateDocumentFn: func(ctx context.Context, d *influxdb.Document) error {
 								d.Labels = []*influxdb.Label{&label1, &label2}
 								d.Meta.CreatedAt = mockGen.Now()
 								return nil

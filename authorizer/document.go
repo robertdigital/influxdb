@@ -3,175 +3,9 @@ package authorizer
 import (
 	"context"
 	"fmt"
+
 	"github.com/influxdata/influxdb"
 )
-
-/*
-// authorizedWithOrgID adds the provided org as an owner of the document if
-// the authorizer is allowed to access the org in being added.
-func CreateDocumentAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgName string) influxdb.DocumentOptions {
-	if orgID.Valid() {
-		return authorizedWithOrgID(ctx, orgID, influxdb.WriteAction)
-	}
-	return authorizedWithOrg(ctx, orgName, influxdb.WriteAction)
-}
-
-func GetDocumentsAuthorizerOption(ctx context.Context, orgID influxdb.ID, orgName string) influxdb.DocumentFindOptions {
-	if orgID.Valid() {
-		return authorizedWhereOrgID(ctx, orgID)
-	}
-	return authorizedWhereOrg(ctx, orgName)
-}
-
-func GetDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) influxdb.DocumentFindOptions {
-	return authorizedRead(ctx, docID)
-}
-
-func UpdateDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) influxdb.DocumentOptions {
-	return toDocumentOptions(authorizedWrite(ctx, docID))
-}
-
-func DeleteDocumentAuthorizerOption(ctx context.Context, docID influxdb.ID) influxdb.DocumentFindOptions {
-	return authorizedWrite(ctx, docID)
-}
-
-func authorizedMatchPermission(ctx context.Context, p influxdb.Permission) influxdb.DocumentFindOptions {
-	return func(idx influxdb.DocumentIndex, _ influxdb.DocumentDecorator) ([]influxdb.ID, error) {
-		if err := IsAllowed(ctx, p); err != nil {
-			return nil, err
-		}
-		return []influxdb.ID{*p.Resource.ID}, nil
-	}
-}
-
-func authorizedWhereIDs(ctx context.Context, orgID, docID influxdb.ID, action influxdb.Action) influxdb.DocumentFindOptions {
-	return func(idx influxdb.DocumentIndex, dec influxdb.DocumentDecorator) ([]influxdb.ID, error) {
-		p, err := newDocumentPermission(action, orgID, docID)
-		if err != nil {
-			return nil, err
-		}
-		return authorizedMatchPermission(ctx, *p)(idx, dec)
-	}
-}
-
-func orgIDForDocument(ctx context.Context, idx influxdb.DocumentIndex, d influxdb.ID) (influxdb.ID, error) {
-	oids, err := idx.GetDocumentsAccessors(d)
-	if err != nil {
-		return 0, err
-	}
-	if len(oids) == 0 {
-		// This document has no accessor.
-		// From the perspective of the user, it does not exist.
-		return 0, &influxdb.Error{
-			Code: influxdb.ENotFound,
-			Msg:  influxdb.ErrDocumentNotFound,
-		}
-	}
-	a, err := icontext.GetAuthorizer(ctx)
-	if err != nil {
-		return 0, err
-	}
-	for _, oid := range oids {
-		if err := idx.IsOrgAccessor(a.GetUserID(), oid); err == nil {
-			return oid, nil
-		}
-	}
-	// There are accessors, but this user is not part of those ones.
-	return 0, &influxdb.Error{
-		Code: influxdb.EUnauthorized,
-		Msg:  fmt.Sprintf("%s is unauthorized", a.GetUserID()),
-	}
-}
-
-func authorizedWhereID(ctx context.Context, docID influxdb.ID, action influxdb.Action) influxdb.DocumentFindOptions {
-	return func(idx influxdb.DocumentIndex, dec influxdb.DocumentDecorator) ([]influxdb.ID, error) {
-		oid, err := orgIDForDocument(ctx, idx, docID)
-		if err != nil {
-			return nil, err
-		}
-		p, err := newDocumentPermission(action, oid, docID)
-		if err != nil {
-			return nil, err
-		}
-		return authorizedMatchPermission(ctx, *p)(idx, dec)
-	}
-}
-
-func authorizedRead(ctx context.Context, docID influxdb.ID) influxdb.DocumentFindOptions {
-	return func(idx influxdb.DocumentIndex, dec influxdb.DocumentDecorator) ([]influxdb.ID, error) {
-		return authorizedWhereID(ctx, docID, influxdb.ReadAction)(idx, dec)
-	}
-}
-
-func authorizedWrite(ctx context.Context, docID influxdb.ID) influxdb.DocumentFindOptions {
-	return func(idx influxdb.DocumentIndex, dec influxdb.DocumentDecorator) ([]influxdb.ID, error) {
-		return authorizedWhereID(ctx, docID, influxdb.WriteAction)(idx, dec)
-	}
-}
-
-func authorizedWithOrgID(ctx context.Context, orgID influxdb.ID, action influxdb.Action) func(influxdb.ID, influxdb.DocumentIndex) error {
-	return func(id influxdb.ID, idx influxdb.DocumentIndex) error {
-		p, err := newDocumentOrgPermission(action, orgID)
-		if err != nil {
-			return err
-		}
-		if err := IsAllowed(ctx, *p); err != nil {
-			return err
-		}
-		// This is required for retrieving later.
-		return idx.AddDocumentOwner(id, "org", orgID)
-	}
-}
-
-func authorizedWithOrg(ctx context.Context, org string, action influxdb.Action) func(influxdb.ID, influxdb.DocumentIndex) error {
-	return func(id influxdb.ID, idx influxdb.DocumentIndex) error {
-		oid, err := idx.FindOrganizationByName(org)
-		if err != nil {
-			return err
-		}
-		return authorizedWithOrgID(ctx, oid, action)(id, idx)
-	}
-}
-
-func authorizedWhereOrgID(ctx context.Context, orgID influxdb.ID) influxdb.DocumentFindOptions {
-	return func(idx influxdb.DocumentIndex, dec influxdb.DocumentDecorator) ([]influxdb.ID, error) {
-		if err := idx.FindOrganizationByID(orgID); err != nil {
-			return nil, err
-		}
-		ids, err := idx.GetAccessorsDocuments("org", orgID)
-		if err != nil {
-			return nil, err
-		}
-		// This filters without allocating
-		// https://github.com/golang/go/wiki/SliceTricks#filtering-without-allocating
-		dids := ids[:0]
-		for _, id := range ids {
-			if _, err := authorizedWhereIDs(ctx, orgID, id, influxdb.ReadAction)(idx, dec); err != nil {
-				continue
-			}
-			dids = append(dids, id)
-		}
-		return dids, nil
-	}
-}
-
-func authorizedWhereOrg(ctx context.Context, org string) influxdb.DocumentFindOptions {
-	return func(idx influxdb.DocumentIndex, dec influxdb.DocumentDecorator) ([]influxdb.ID, error) {
-		oid, err := idx.FindOrganizationByName(org)
-		if err != nil {
-			return nil, err
-		}
-		return authorizedWhereOrgID(ctx, oid)(idx, dec)
-	}
-}
-
-func toDocumentOptions(findOpt influxdb.DocumentFindOptions) influxdb.DocumentOptions {
-	return func(id influxdb.ID, index influxdb.DocumentIndex) error {
-		_, err := findOpt(index, nil)
-		return err
-	}
-}
-*/
 
 var _ influxdb.DocumentService = (*DocumentService)(nil)
 var _ influxdb.DocumentStore = (*documentStore)(nil)
@@ -188,7 +22,7 @@ func NewDocumentService(s influxdb.DocumentService) influxdb.DocumentService {
 }
 
 func (s *DocumentService) CreateDocumentStore(ctx context.Context, name string) (influxdb.DocumentStore, error) {
-	ds, err := s.s.FindDocumentStore(ctx, name)
+	ds, err := s.s.CreateDocumentStore(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +30,7 @@ func (s *DocumentService) CreateDocumentStore(ctx context.Context, name string) 
 }
 
 func (s *DocumentService) FindDocumentStore(ctx context.Context, name string) (influxdb.DocumentStore, error) {
-	ds, err := s.s.CreateDocumentStore(ctx, name)
+	ds, err := s.s.FindDocumentStore(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +57,7 @@ func toPerms(orgs map[influxdb.ID]influxdb.UserType, action influxdb.Action) ([]
 	return ps, nil
 }
 
-func (s *documentStore) CreateDocument(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+func (s *documentStore) CreateDocument(ctx context.Context, d *influxdb.Document) error {
 	if len(d.Organizations) == 0 {
 		return fmt.Errorf("cannot authorize document creation without any orgID")
 	}
@@ -234,23 +68,31 @@ func (s *documentStore) CreateDocument(ctx context.Context, d *influxdb.Document
 	if err := IsAllowedAny(ctx, ps); err != nil {
 		return err
 	}
-	return s.s.CreateDocument(ctx, d, opts...)
+	return s.s.CreateDocument(ctx, d)
+}
+func (s *documentStore) FindDocument(ctx context.Context, id influxdb.ID) (*influxdb.Document, error) {
+	d, err := s.s.FindDocument(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	ps, err := toPerms(d.Organizations, influxdb.ReadAction)
+	if err != nil {
+		return nil, err
+	}
+	if err := IsAllowedAny(ctx, ps); err != nil {
+		return nil, err
+	}
+	return d, nil
 }
 
-func (s *documentStore) UpdateDocument(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
+func (s *documentStore) UpdateDocument(ctx context.Context, d *influxdb.Document) error {
 	if len(d.Organizations) == 0 {
-		// Cannot authorize document update without any orgID.
-		ds, err := s.s.FindDocuments(ctx,  influxdb.WhereID(d.ID), influxdb.IncludeOrganizations)
+		// Cannot authorize without orgs
+		ds, err := s.s.FindDocument(ctx, d.ID)
 		if err != nil {
 			return err
 		}
-		if len(ds) == 0 {
-			return &influxdb.Error{
-				Code: influxdb.ENotFound,
-				Msg:  influxdb.ErrDocumentNotFound,
-			}
-		}
-		d = ds[0]
+		d.Organizations = ds.Organizations
 	}
 	ps, err := toPerms(d.Organizations, influxdb.WriteAction)
 	if err != nil {
@@ -259,7 +101,22 @@ func (s *documentStore) UpdateDocument(ctx context.Context, d *influxdb.Document
 	if err := IsAllowedAny(ctx, ps); err != nil {
 		return err
 	}
-	return s.s.UpdateDocument(ctx, d, opts...)
+	return s.s.UpdateDocument(ctx, d)
+}
+
+func (s *documentStore) DeleteDocument(ctx context.Context, id influxdb.ID) error {
+	d, err := s.s.FindDocument(ctx, id)
+	if err != nil {
+		return err
+	}
+	ps, err := toPerms(d.Organizations, influxdb.WriteAction)
+	if err != nil {
+		return err
+	}
+	if err := IsAllowedAny(ctx, ps); err != nil {
+		return err
+	}
+	return s.s.DeleteDocument(ctx, id)
 }
 
 func (s *documentStore) findDocs(ctx context.Context, action influxdb.Action, opts ...influxdb.DocumentFindOptions) ([]*influxdb.Document, error) {
@@ -280,7 +137,13 @@ func (s *documentStore) findDocs(ctx context.Context, action influxdb.Action, op
 			return nil, err
 		}
 		if err := IsAllowedAny(ctx, ps); err != nil {
-			return nil, err
+			// If you are looking for docs for reading, then use permissions as a filter.
+			// If you are editing, then, you are not allowed.
+			if action == influxdb.ReadAction {
+				continue
+			} else {
+				return nil, err
+			}
 		}
 		fds = append(fds, d)
 	}

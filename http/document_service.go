@@ -161,7 +161,6 @@ func (h *DocumentHandler) handlePostDocument(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var opts []influxdb.DocumentOptions
 	if err := validateOrgParams(req.Org, req.OrgID); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
@@ -169,13 +168,12 @@ func (h *DocumentHandler) handlePostDocument(w http.ResponseWriter, r *http.Requ
 	// TODO
 	req.Document.Organizations = make(map[influxdb.ID]influxdb.UserType)
 	req.Document.Organizations[req.OrgID] = influxdb.Owner
-	//opts = append(opts, authorizer.CreateDocumentAuthorizerOption(ctx, req.OrgID, req.Org))
-	for _, label := range req.Labels {
-		// TODO(desa): make these AuthorizedWithLabel eventually
-		opts = append(opts, influxdb.WithLabel(label))
-	}
 
-	if err := s.CreateDocument(ctx, req.Document, opts...); err != nil {
+	d := req.Document
+	for _, lid := range req.Labels {
+		d.Labels = append(d.Labels, &influxdb.Label{ID: lid})
+	}
+	if err := s.CreateDocument(ctx, d); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
@@ -190,10 +188,12 @@ func (h *DocumentHandler) handlePostDocument(w http.ResponseWriter, r *http.Requ
 
 type postDocumentRequest struct {
 	*influxdb.Document
-	Namespace string        `json:"-"`
-	Org       string        `json:"org"`
-	OrgID     influxdb.ID   `json:"orgID,omitempty"`
-	Labels    []influxdb.ID `json:"labels"`
+	Namespace string      `json:"-"`
+	Org       string      `json:"org"`
+	OrgID     influxdb.ID `json:"orgID,omitempty"`
+	// TODO(aff0): Why not accepting fully qualified labels?
+	//  this forces us to convert them back and forth.
+	Labels []influxdb.ID `json:"labels"`
 }
 
 func decodePostDocumentRequest(ctx context.Context, r *http.Request) (*postDocumentRequest, error) {
@@ -396,28 +396,11 @@ func (h *DocumentHandler) getDocument(w http.ResponseWriter, r *http.Request) (*
 	if err != nil {
 		return nil, "", err
 	}
-	ds, err := s.FindDocuments(
-		ctx,
-		influxdb.WhereID(req.ID),
-		influxdb.IncludeContent,
-		influxdb.IncludeLabels,
-	)
+	ds, err := s.FindDocument(ctx, req.ID)
 	if err != nil {
 		return nil, "", err
 	}
-	if len(ds) == 0 {
-		return nil, "", &influxdb.Error{
-			Code: influxdb.ENotFound,
-			Msg:  influxdb.ErrDocumentNotFound,
-		}
-	}
-	if len(ds) > 1 {
-		return nil, "", &influxdb.Error{
-			Code: influxdb.EInternal,
-			Msg:  fmt.Sprintf("found more than one document with id %s; please report this error", req.ID),
-		}
-	}
-	return ds[0], req.Namespace, nil
+	return ds, req.Namespace, nil
 }
 
 // handleGetDocument is the HTTP handler for the GET /api/v2/documents/:ns/:id route.
@@ -489,7 +472,7 @@ func (h *DocumentHandler) handleDeleteDocument(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err := s.DeleteDocuments(ctx, influxdb.WhereID(req.ID)); err != nil {
+	if err := s.DeleteDocument(ctx, req.ID); err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
@@ -556,22 +539,11 @@ func (h *DocumentHandler) handlePutDocument(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ds, err := s.FindDocuments(ctx, influxdb.WhereID(req.Document.ID), influxdb.IncludeContent, influxdb.IncludeLabels)
+	d, err := s.FindDocument(ctx, req.Document.ID)
 	if err != nil {
 		h.HandleHTTPError(ctx, err, w)
 		return
 	}
-
-	if len(ds) != 1 {
-		err := &influxdb.Error{
-			Code: influxdb.EInternal,
-			Msg:  fmt.Sprintf("found more than one document with id %s; please report this error", req.ID),
-		}
-		h.HandleHTTPError(ctx, err, w)
-		return
-	}
-
-	d := ds[0]
 
 	h.log.Debug("Document updated", zap.String("document", fmt.Sprint(d)))
 
@@ -645,7 +617,7 @@ func buildDocumentLabelPath(namespace string, did influxdb.ID, lid influxdb.ID) 
 
 // CreateDocument creates a document in the specified namespace.
 // Only the ids of the given labels will be used.
-// After the call, if successful, the input document will contain the new one.
+// After the call, if successful, the input document will contain the newly assigned ID.
 func (s *documentService) CreateDocument(ctx context.Context, namespace string, orgID influxdb.ID, d *influxdb.Document) error {
 	span, _ := tracing.StartSpanFromContext(ctx)
 	defer span.Finish()
@@ -669,7 +641,7 @@ func (s *documentService) CreateDocument(ctx context.Context, namespace string, 
 		Do(ctx); err != nil {
 		return err
 	}
-	*d = *resp.Document
+	d.ID = resp.ID
 	return nil
 }
 

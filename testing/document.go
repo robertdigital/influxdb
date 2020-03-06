@@ -10,23 +10,26 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/influxdata/influxdb"
+	"github.com/influxdata/influxdb/authorizer"
 	icontext "github.com/influxdata/influxdb/context"
+	"github.com/influxdata/influxdb/inmem"
 	"github.com/influxdata/influxdb/kv"
 	"github.com/influxdata/influxdb/mock"
-	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 )
 
 // NewDocumentIntegrationTest will test the documents related funcs.
 func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 	return func(t *testing.T) {
 		ctx := context.Background()
-		svc := kv.NewService(zap.NewNop(), store)
+		kvsvc := kv.NewService(zaptest.NewLogger(t), inmem.NewKVStore())
 		mockTimeGen := new(mock.TimeGenerator)
-		if err := svc.Initialize(ctx); err != nil {
+		if err := kvsvc.Initialize(ctx); err != nil {
 			t.Fatalf("failed to initialize service: %v", err)
 		}
 
-		svc.TimeGenerator = mockTimeGen
+		kvsvc.TimeGenerator = mockTimeGen
+		svc := authorizer.NewDocumentService(kvsvc)
 
 		s, err := svc.CreateDocumentStore(ctx, "testing")
 		if err != nil {
@@ -40,21 +43,20 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 
 		l1 := &influxdb.Label{Name: "l1", OrgID: MustIDBase16("41a9f7288d4e2d64")}
 		l2 := &influxdb.Label{Name: "l2", OrgID: MustIDBase16("41a9f7288d4e2d64")}
-		MustCreateLabels(ctx, svc, l1, l2)
+		MustCreateLabels(ctx, kvsvc, l1, l2)
 		lBad := &influxdb.Label{ID: MustIDBase16(oneID), Name: "bad"}
 
 		o1 := &influxdb.Organization{Name: "foo"}
 		o2 := &influxdb.Organization{Name: "bar"}
-		MustCreateOrgs(ctx, svc, o1, o2)
+		MustCreateOrgs(ctx, kvsvc, o1, o2)
 
 		u1 := &influxdb.User{Name: "yanky"}
 		u2 := &influxdb.User{Name: "doodle"}
-		MustCreateUsers(ctx, svc, u1, u2)
+		MustCreateUsers(ctx, kvsvc, u1, u2)
 
-		MustMakeUsersOrgOwner(ctx, svc, o1.ID, u1.ID)
-
-		MustMakeUsersOrgOwner(ctx, svc, o2.ID, u2.ID)
-		MustMakeUsersOrgMember(ctx, svc, o1.ID, u2.ID)
+		MustMakeUsersOrgOwner(ctx, kvsvc, o1.ID, u1.ID)
+		MustMakeUsersOrgOwner(ctx, kvsvc, o2.ID, u2.ID)
+		MustMakeUsersOrgMember(ctx, kvsvc, o1.ID, u2.ID)
 
 		// TODO(desa): test tokens and authorizations as well.
 		now := time.Now()
@@ -63,7 +65,14 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			ExpiresAt: now.Add(1 * time.Hour),
 			UserID:    u1.ID,
 			Permissions: []influxdb.Permission{
-				// create doc for o1
+				// u1 is owner of o1
+				{
+					Action: influxdb.ReadAction,
+					Resource: influxdb.Resource{
+						OrgID: &o1.ID,
+						Type:  influxdb.DocumentsResourceType,
+					},
+				},
 				{
 					Action: influxdb.WriteAction,
 					Resource: influxdb.Resource{
@@ -78,11 +87,26 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			ExpiresAt: now.Add(1 * time.Hour),
 			UserID:    u2.ID,
 			Permissions: []influxdb.Permission{
-				// create doc for o2
+				// u2 is owner of o2
+				{
+					Action: influxdb.ReadAction,
+					Resource: influxdb.Resource{
+						OrgID: &o2.ID,
+						Type:  influxdb.DocumentsResourceType,
+					},
+				},
 				{
 					Action: influxdb.WriteAction,
 					Resource: influxdb.Resource{
 						OrgID: &o2.ID,
+						Type:  influxdb.DocumentsResourceType,
+					},
+				},
+				// u2 is member of o1
+				{
+					Action: influxdb.ReadAction,
+					Resource: influxdb.Resource{
+						OrgID: &o1.ID,
 						Type:  influxdb.DocumentsResourceType,
 					},
 				},
@@ -103,43 +127,17 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 				Content: map[string]interface{}{
 					"v1": "v1",
 				},
+				Labels: []*influxdb.Label{l1},
+				Organizations: map[influxdb.ID]influxdb.UserType{o1.ID: influxdb.Owner},
 			}
 			ctx := context.Background()
 			ctx = icontext.SetAuthorizer(ctx, s1)
 
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 0, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d1, influxdb.WithLabel(l1.ID)); err != nil {
+			if err := s.CreateDocument(ctx, d1); err != nil {
 				t.Errorf("failed to create document: %v", err)
 			}
 		})
-
-		// u1 owns d1
-		s1.Permissions = append(s1.Permissions,
-			influxdb.Permission{
-				Action: influxdb.ReadAction,
-				Resource: influxdb.Resource{
-					ID:   &d1.ID,
-					Type: influxdb.DocumentsResourceType,
-				},
-			},
-			influxdb.Permission{
-				Action: influxdb.WriteAction,
-				Resource: influxdb.Resource{
-					ID:   &d1.ID,
-					Type: influxdb.DocumentsResourceType,
-				},
-			},
-		)
-		// u2 is part of o1
-		s2.Permissions = append(s2.Permissions,
-			influxdb.Permission{
-				Action: influxdb.ReadAction,
-				Resource: influxdb.Resource{
-					ID:   &d1.ID,
-					Type: influxdb.DocumentsResourceType,
-				},
-			},
-		)
 
 		t.Run("u2 cannot create document for o1", func(t *testing.T) {
 			d2 = &influxdb.Document{
@@ -149,38 +147,23 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 				Content: map[string]interface{}{
 					"i2": "i2",
 				},
+				Labels:        []*influxdb.Label{l2},
+				Organizations: map[influxdb.ID]influxdb.UserType{o1.ID: influxdb.Owner},
 			}
 			ctx := context.Background()
 			ctx = icontext.SetAuthorizer(ctx, s2)
 
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 1, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d2, influxdb.WithLabel(l2.ID)); err == nil {
-				t.Fatalf("should not have be authorized to create document")
+			if err := s.CreateDocument(ctx, d2); err == nil {
+				t.Fatalf("should not have been authorized to create document")
 			}
 
 			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 1, 0, time.UTC)
+			d2.Organizations = map[influxdb.ID]influxdb.UserType{o2.ID: influxdb.Owner}
 			if err := s.CreateDocument(ctx, d2); err != nil {
 				t.Errorf("should have been authorized to create document: %v", err)
 			}
 		})
-
-		// u2 owns d2
-		s2.Permissions = append(s2.Permissions,
-			influxdb.Permission{
-				Action: influxdb.ReadAction,
-				Resource: influxdb.Resource{
-					ID:   &d2.ID,
-					Type: influxdb.DocumentsResourceType,
-				},
-			},
-			influxdb.Permission{
-				Action: influxdb.WriteAction,
-				Resource: influxdb.Resource{
-					ID:   &d2.ID,
-					Type: influxdb.DocumentsResourceType,
-				},
-			},
-		)
 
 		t.Run("u1 cannot create document for o2", func(t *testing.T) {
 			d3 = &influxdb.Document{
@@ -190,6 +173,7 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 				Content: map[string]interface{}{
 					"k2": "v2",
 				},
+				Organizations: map[influxdb.ID]influxdb.UserType{o2.ID: influxdb.Owner},
 			}
 			ctx := context.Background()
 			ctx = icontext.SetAuthorizer(ctx, s1)
@@ -200,17 +184,7 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 			}
 		})
 
-		/* Affo: This is not allowed now.
-		t.Run("can create unowned document", func(t *testing.T) {
-			// TODO(desa): should this be allowed?
-			mockTimeGen.FakeValue = time.Date(2009, 1, 2, 3, 0, 2, 0, time.UTC)
-			if err := s.CreateDocument(ctx, d3); err != nil {
-				t.Fatalf("should have been able to create document: %v", err)
-			}
-		})
-		*/
-
-		t.Run("can't create document with unexisted label", func(t *testing.T) {
+		t.Run("can't create document with non existing label", func(t *testing.T) {
 			d4 := &influxdb.Document{
 				Meta: influxdb.DocumentMeta{
 					Name: "i4",
@@ -218,10 +192,12 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 				Content: map[string]interface{}{
 					"k4": "v4",
 				},
+				Labels: []*influxdb.Label{lBad},
+				Organizations: map[influxdb.ID]influxdb.UserType{o1.ID: influxdb.Owner},
 			}
 			ctx := context.Background()
 			ctx = icontext.SetAuthorizer(ctx, s1)
-			err = s.CreateDocument(ctx, d4, influxdb.WithLabel(lBad.ID))
+			err = s.CreateDocument(ctx, d4)
 			ErrorsEqual(t, err, &influxdb.Error{
 				Code: influxdb.ENotFound,
 				Msg:  "label not found",
@@ -240,23 +216,16 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 
 		d3.Meta.CreatedAt = time.Date(2009, 1, 2, 3, 0, 2, 0, time.UTC)
 
-		t.Run("bare call to find returns all documents", func(t *testing.T) {
-			ds, err := ss.FindDocuments(ctx)
-			if err != nil {
-				t.Fatalf("failed to retrieve documents: %v", err)
-			}
-			// Affo: there is no d3 now.
-			// if exp, got := []*influxdb.Document{d1, d2, d3}, ds; !docsMetaEqual(exp, got) {
-			if exp, got := []*influxdb.Document{d1, d2}, ds; !docsMetaEqual(exp, got) {
-				t.Errorf("documents are different -got/+want\ndiff %s", docsMetaDiff(exp, got))
-			}
-		})
-
-		t.Run("u1 can see o1s documents by label", func(t *testing.T) {
+		t.Run("u1 can see only o1s documents by label", func(t *testing.T) {
 			ctx := context.Background()
 			ctx = icontext.SetAuthorizer(ctx, s1)
-			ds, err := ss.FindDocuments(ctx, influxdb.IncludeContent, influxdb.IncludeLabels)
-
+			ds, err := ss.FindDocuments(
+				ctx,
+				influxdb.WhereOrgID(o1.ID),
+				influxdb.WhereOrgID(o2.ID),
+				influxdb.IncludeContent,
+				influxdb.IncludeLabels,
+			)
 			if err != nil {
 				t.Fatalf("failed to retrieve documents: %v", err)
 			}
@@ -267,7 +236,7 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 		})
 
 		t.Run("check not found err", func(t *testing.T) {
-			_, err := ss.FindDocuments(ctx, influxdb.WhereID(MustIDBase16(fourID)), influxdb.IncludeContent)
+			_, err := ss.FindDocument(ctx, MustIDBase16(fourID))
 			ErrorsEqual(t, err, &influxdb.Error{
 				Code: influxdb.ENotFound,
 				Msg:  influxdb.ErrDocumentNotFound,
@@ -277,16 +246,17 @@ func NewDocumentIntegrationTest(store kv.Store) func(t *testing.T) {
 		t.Run("u2 can see o1 and o2s documents", func(t *testing.T) {
 			ctx := context.Background()
 			ctx = icontext.SetAuthorizer(ctx, s2)
-			ds1, err := ss.FindDocuments(ctx, influxdb.IncludeContent, influxdb.IncludeLabels)
+			ds, err := ss.FindDocuments(
+				ctx,
+				influxdb.WhereOrgID(o1.ID),
+				influxdb.WhereOrgID(o2.ID),
+				influxdb.IncludeContent,
+				influxdb.IncludeLabels,
+			)
 			if err != nil {
 				t.Fatalf("failed to retrieve documents for org1: %v", err)
 			}
-			ds2, err := ss.FindDocuments(ctx, influxdb.IncludeContent, influxdb.IncludeLabels)
-			if err != nil {
-				t.Fatalf("failed to retrieve documents for org2: %v", err)
-			}
-
-			if exp, got := []*influxdb.Document{dl1, dl2}, append(ds1, ds2...); !docsEqual(exp, got) {
+			if exp, got := []*influxdb.Document{dl1, dl2}, ds; !docsEqual(exp, got) {
 				t.Errorf("documents are different -got/+want\ndiff %s", docsDiff(exp, got))
 			}
 		})
