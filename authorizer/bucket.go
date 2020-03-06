@@ -2,6 +2,9 @@ package authorizer
 
 import (
 	"context"
+	"fmt"
+
+	icontext "github.com/influxdata/influxdb/context"
 
 	"github.com/influxdata/influxdb"
 	"github.com/influxdata/influxdb/kit/tracing"
@@ -13,12 +16,14 @@ var _ influxdb.BucketService = (*BucketService)(nil)
 // against it appropriately.
 type BucketService struct {
 	s influxdb.BucketService
+	u influxdb.UserResourceMappingService
 }
 
 // NewBucketService constructs an instance of an authorizing bucket serivce.
-func NewBucketService(s influxdb.BucketService) *BucketService {
+func NewBucketService(s influxdb.BucketService, u influxdb.UserResourceMappingService) *BucketService {
 	return &BucketService{
 		s: s,
+		u: u,
 	}
 }
 
@@ -53,6 +58,32 @@ func authorizeWriteBucket(ctx context.Context, orgID, id influxdb.ID) error {
 	}
 
 	return nil
+}
+
+func authorizeReadSystemBucket(ctx context.Context, orgID influxdb.ID, u influxdb.UserResourceMappingService) error {
+	id, err := icontext.GetUserID(ctx)
+	if err != nil {
+		return err
+	}
+
+	ms, _, err := u.FindUserResourceMappings(ctx, influxdb.UserResourceMappingFilter{
+		UserID:       id,
+		ResourceType: influxdb.OrgsResourceType,
+	})
+	if err != nil {
+		return fmt.Errorf("finding organization mapping for user %s: %v", id, err)
+	}
+
+	for _, m := range ms {
+		if m.ResourceID == orgID {
+			return nil
+		}
+	}
+
+	return &influxdb.Error{
+		Code: influxdb.EUnauthorized,
+		Msg:  fmt.Sprintf("unauthorized"),
+	}
 }
 
 // FindBucketByID checks to see if the authorizer on context has read access to the id provided.
@@ -122,13 +153,15 @@ func (s *BucketService) FindBuckets(ctx context.Context, filter influxdb.BucketF
 	// https://github.com/golang/go/wiki/SliceTricks#filtering-without-allocating
 	buckets := bs[:0]
 	for _, b := range bs {
-		// HACK: remove once system buckets are migrated away from hard coded values
-		if b.Type == influxdb.BucketTypeSystem {
-			buckets = append(buckets, b)
-			continue
+		var err error
+		switch b.Type {
+		case influxdb.BucketTypeSystem:
+			// HACK: remove once system buckets are migrated away from hard coded values
+			err = authorizeReadSystemBucket(ctx, b.OrgID, s.u)
+		default:
+			err = authorizeReadBucket(ctx, b.OrgID, b.ID)
 		}
 
-		err := authorizeReadBucket(ctx, b.OrgID, b.ID)
 		if err != nil && influxdb.ErrorCode(err) != influxdb.EUnauthorized {
 			return nil, 0, err
 		}
