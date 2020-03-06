@@ -167,7 +167,8 @@ func (h *DocumentHandler) handlePostDocument(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	// TODO
-	req.Document.OrgID = req.OrgID
+	req.Document.Organizations = make(map[influxdb.ID]influxdb.UserType)
+	req.Document.Organizations[req.OrgID] = influxdb.Owner
 	//opts = append(opts, authorizer.CreateDocumentAuthorizerOption(ctx, req.OrgID, req.Org))
 	for _, label := range req.Labels {
 		// TODO(desa): make these AuthorizedWithLabel eventually

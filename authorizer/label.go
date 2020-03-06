@@ -54,6 +54,19 @@ func authorizeLabelMappingAction(ctx context.Context, action influxdb.Action, id
 	return nil
 }
 
+func authorizeDocumentLabelMappingAction(ctx context.Context, action influxdb.Action, orgID influxdb.ID) error {
+	p, err := newDocumentOrgPermission(action, orgID)
+	if err != nil {
+		return err
+	}
+
+	if err := IsAllowed(ctx, *p); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func authorizeReadLabel(ctx context.Context, orgID, id influxdb.ID) error {
 	p, err := newLabelPermission(influxdb.ReadAction, orgID, id)
 	if err != nil {
@@ -128,8 +141,10 @@ func (s *LabelService) FindLabels(ctx context.Context, filter influxdb.LabelFilt
 // FindResourceLabels retrieves all labels belonging to the filtering resource if the authorizer on context has read access to it.
 // Then it filters the list down to only the labels that are authorized.
 func (s *LabelService) FindResourceLabels(ctx context.Context, filter influxdb.LabelMappingFilter) ([]*influxdb.Label, error) {
-	if err := authorizeLabelMappingAction(ctx, influxdb.ReadAction, filter.ResourceID, filter.ResourceType); err != nil {
-		return nil, err
+	if filter.ResourceType != influxdb.DocumentsResourceType {
+		if err := authorizeLabelMappingAction(ctx, influxdb.ReadAction, filter.ResourceID, filter.ResourceType); err != nil {
+			return nil, err
+		}
 	}
 
 	ls, err := s.s.FindResourceLabels(ctx, filter)
@@ -139,7 +154,12 @@ func (s *LabelService) FindResourceLabels(ctx context.Context, filter influxdb.L
 
 	labels := ls[:0]
 	for _, l := range ls {
-		err := authorizeReadLabel(ctx, l.OrgID, l.ID)
+		var err error
+		if filter.ResourceType == influxdb.DocumentsResourceType {
+			err = authorizeDocumentLabelMappingAction(ctx, influxdb.ReadAction, l.OrgID)
+		} else {
+			err = authorizeReadLabel(ctx, l.OrgID, l.ID)
+		}
 		if err != nil && influxdb.ErrorCode(err) != influxdb.EUnauthorized {
 			return nil, err
 		}
@@ -174,8 +194,14 @@ func (s *LabelService) CreateLabelMapping(ctx context.Context, m *influxdb.Label
 		return err
 	}
 
-	if err := authorizeLabelMappingAction(ctx, influxdb.WriteAction, m.ResourceID, m.ResourceType); err != nil {
-		return err
+	if m.ResourceType == influxdb.DocumentsResourceType {
+		if err := authorizeDocumentLabelMappingAction(ctx, influxdb.WriteAction, l.OrgID); err != nil {
+			return err
+		}
+	} else {
+		if err := authorizeLabelMappingAction(ctx, influxdb.WriteAction, m.ResourceID, m.ResourceType); err != nil {
+			return err
+		}
 	}
 
 	return s.s.CreateLabelMapping(ctx, m)
@@ -220,8 +246,14 @@ func (s *LabelService) DeleteLabelMapping(ctx context.Context, m *influxdb.Label
 		return err
 	}
 
-	if err := authorizeLabelMappingAction(ctx, influxdb.WriteAction, m.ResourceID, m.ResourceType); err != nil {
-		return err
+	if m.ResourceType == influxdb.DocumentsResourceType {
+		if err := authorizeDocumentLabelMappingAction(ctx, influxdb.WriteAction, l.OrgID); err != nil {
+			return err
+		}
+	} else {
+		if err := authorizeLabelMappingAction(ctx, influxdb.WriteAction, m.ResourceID, m.ResourceType); err != nil {
+			return err
+		}
 	}
 
 	return s.s.DeleteLabelMapping(ctx, m)

@@ -2,6 +2,7 @@ package authorizer
 
 import (
 	"context"
+	"fmt"
 	"github.com/influxdata/influxdb"
 )
 
@@ -170,7 +171,7 @@ func toDocumentOptions(findOpt influxdb.DocumentFindOptions) influxdb.DocumentOp
 		return err
 	}
 }
- */
+*/
 
 var _ influxdb.DocumentService = (*DocumentService)(nil)
 var _ influxdb.DocumentStore = (*documentStore)(nil)
@@ -206,31 +207,56 @@ type documentStore struct {
 	s influxdb.DocumentStore
 }
 
-func newDocumentPermission(a influxdb.Action, id influxdb.ID) (*influxdb.Permission, error) {
-	return influxdb.NewPermissionAtResourceID(id, a, influxdb.DocumentsResourceType)
-}
-
 func newDocumentOrgPermission(a influxdb.Action, orgID influxdb.ID) (*influxdb.Permission, error) {
 	return influxdb.NewPermission(a, influxdb.DocumentsResourceType, orgID)
 }
 
+func toPerms(orgs map[influxdb.ID]influxdb.UserType, action influxdb.Action) ([]influxdb.Permission, error) {
+	ps := make([]influxdb.Permission, 0, len(orgs))
+	for orgID := range orgs {
+		p, err := newDocumentOrgPermission(action, orgID)
+		if err != nil {
+			return nil, err
+		}
+		ps = append(ps, *p)
+	}
+	return ps, nil
+}
+
 func (s *documentStore) CreateDocument(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
-	p, err := newDocumentOrgPermission(influxdb.WriteAction, d.OrgID)
+	if len(d.Organizations) == 0 {
+		return fmt.Errorf("cannot authorize document creation without any orgID")
+	}
+	ps, err := toPerms(d.Organizations, influxdb.WriteAction)
 	if err != nil {
 		return err
 	}
-	if err := IsAllowed(ctx, *p); err != nil {
+	if err := IsAllowedAny(ctx, ps); err != nil {
 		return err
 	}
 	return s.s.CreateDocument(ctx, d, opts...)
 }
 
 func (s *documentStore) UpdateDocument(ctx context.Context, d *influxdb.Document, opts ...influxdb.DocumentOptions) error {
-	p, err := newDocumentPermission(influxdb.WriteAction, d.ID)
+	if len(d.Organizations) == 0 {
+		// Cannot authorize document update without any orgID.
+		ds, err := s.s.FindDocuments(ctx,  influxdb.WhereID(d.ID), influxdb.IncludeOrganizations)
+		if err != nil {
+			return err
+		}
+		if len(ds) == 0 {
+			return &influxdb.Error{
+				Code: influxdb.ENotFound,
+				Msg:  influxdb.ErrDocumentNotFound,
+			}
+		}
+		d = ds[0]
+	}
+	ps, err := toPerms(d.Organizations, influxdb.WriteAction)
 	if err != nil {
 		return err
 	}
-	if err := IsAllowed(ctx, *p); err != nil {
+	if err := IsAllowedAny(ctx, ps); err != nil {
 		return err
 	}
 	return s.s.UpdateDocument(ctx, d, opts...)
@@ -239,7 +265,7 @@ func (s *documentStore) UpdateDocument(ctx context.Context, d *influxdb.Document
 func (s *documentStore) findDocs(ctx context.Context, action influxdb.Action, opts ...influxdb.DocumentFindOptions) ([]*influxdb.Document, error) {
 	// TODO: we'll likely want to push this operation into the database eventually since fetching the whole list of data
 	//  will likely be expensive.
-	opts = append(opts, influxdb.IncludeOwner)
+	opts = append(opts, influxdb.IncludeOrganizations)
 	ds, err := s.s.FindDocuments(ctx, opts...)
 	if err != nil {
 		return nil, err
@@ -249,17 +275,12 @@ func (s *documentStore) findDocs(ctx context.Context, action influxdb.Action, op
 	// https://github.com/golang/go/wiki/SliceTricks#filtering-without-allocating
 	fds := ds[:0]
 	for _, d := range ds {
-		dp, err := newDocumentPermission(action, d.ID)
+		ps, err := toPerms(d.Organizations, action)
 		if err != nil {
 			return nil, err
 		}
-		ps := []influxdb.Permission{*dp}
-		op, err := newDocumentOrgPermission(action, d.OrgID)
-		if err == nil {
-			ps = append(ps, *op)
-		}
-		if err := IsAllowedAll(ctx, ps); err != nil {
-			continue
+		if err := IsAllowedAny(ctx, ps); err != nil {
+			return nil, err
 		}
 		fds = append(fds, d)
 	}
